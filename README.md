@@ -7,6 +7,8 @@ A calm, pastel homework planner built with React, TypeScript, and Vite.
 - Add, edit, complete, and delete planner items
 - Track assignments, quizzes, exams, projects, and readings
 - Classes, priorities, notes, due dates, and due times
+- Persistent class list with quick-add shortcuts and class filtering
+- Eight pastel task and class colors for visual organization
 - Daily, weekly, biweekly, and monthly recurrence
 - Completing recurring work automatically creates its next occurrence
 - Search and filter by status, type, and class
