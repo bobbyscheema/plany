@@ -1,25 +1,31 @@
-# Study Bloom
+# Petal Plan
 
-A calm, pastel homework planner for assignments, quizzes, exams, projects, readings, and recurring coursework.
+A calm, pastel homework planner built with React, TypeScript, and Vite.
 
 ## Features
 
 - Add, edit, complete, and delete planner items
-- Courses, item types, notes, priorities, due dates, and due times
+- Track assignments, quizzes, exams, projects, and readings
+- Classes, priorities, notes, due dates, and due times
 - Daily, weekly, biweekly, and monthly recurrence
-- Completing a recurring item automatically creates its next occurrence
+- Completing recurring work automatically creates its next occurrence
 - Search and filter by status, type, and class
-- At-a-glance counts for open, due today, upcoming, and completed work
-- Responsive layout for desktop and mobile
-- Local SQLite storage
+- Quick views for today, assessments, and completed work
+- Responsive desktop and mobile layouts
+- Private browser-local persistence with no account or backend required
 
 ## Run locally
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python app.py
+npm install
+npm run dev
 ```
 
-Open <http://127.0.0.1:5000>.
+Then open the local URL printed by Vite.
+
+## Production build
+
+```bash
+npm run build
+npm run preview
+```

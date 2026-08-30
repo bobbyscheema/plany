@@ -5,3 +5,6 @@ __pycache__/
 env/
 instance/*.db
 instance/*.db-journal
+node_modules/
+dist/
+*.tsbuildinfo
