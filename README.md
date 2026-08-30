@@ -1,4 +1,4 @@
-# Petal Plan
+# plany
 
 A calm, pastel homework planner built with React, TypeScript, and Vite.
 

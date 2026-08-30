@@ -267,8 +267,8 @@ export default function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <button className="brand" onClick={() => changeStatus('open')} aria-label="Petal Plan home">
-          <span className="brand-mark"><Flower2 size={20} /></span><span>petal plan</span>
+        <button className="brand" onClick={() => changeStatus('open')} aria-label="plany home">
+          <span className="brand-mark"><Flower2 size={20} /></span><span>plany</span>
         </button>
         <nav className="side-nav" aria-label="Planner navigation">
           <button className={status === 'open' ? 'active' : ''} onClick={() => changeStatus('open')}><LayoutDashboard /> <span>My planner</span></button>

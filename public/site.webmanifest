@@ -1,0 +1,17 @@
+{
+  "name": "plany",
+  "short_name": "plany",
+  "description": "A calm planner for homework, exams, and everything in between.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f9f8fc",
+  "theme_color": "#8576c6",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
