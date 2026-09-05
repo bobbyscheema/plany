@@ -1,30 +1,26 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  AlarmClock,
-  BookOpen,
   CalendarDays,
   Check,
   CheckCircle2,
-  ChevronDown,
-  ClipboardList,
   Clock3,
   Flower2,
   GraduationCap,
   LayoutDashboard,
-  ListFilter,
+  Mic,
   Pencil,
   Plus,
   Repeat2,
   Search,
-  Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
+import { parseQuickTask } from './parser'
 
 type ItemType = 'assignment' | 'quiz' | 'exam' | 'project' | 'reading'
 type Priority = 'low' | 'medium' | 'high'
 type Recurrence = 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly'
-type StatusFilter = 'open' | 'all' | 'completed' | 'today' | 'assessments'
+type StatusFilter = 'open' | 'completed' | 'assessments'
 
 type Task = {
   id: string
@@ -36,6 +32,7 @@ type Task = {
   dueTime: string
   notes: string
   recurrence: Recurrence
+  recurrenceDays: number[]
   completed: boolean
   createdAt: string
   color: string
@@ -45,12 +42,26 @@ type ClassGroup = { id: string; name: string; color: string }
 
 type TaskDraft = Omit<Task, 'id' | 'completed' | 'createdAt'>
 
+type SpeechResultEvent = { results: { length: number; [index: number]: { [index: number]: { transcript: string } } } }
+type SpeechRecognitionLike = {
+  lang: string
+  continuous: boolean
+  interimResults: boolean
+  onresult: ((event: SpeechResultEvent) => void) | null
+  onend: (() => void) | null
+  onerror: (() => void) | null
+  start: () => void
+  stop: () => void
+}
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
+type SpeechWindow = Window & { SpeechRecognition?: SpeechRecognitionConstructor; webkitSpeechRecognition?: SpeechRecognitionConstructor }
+
 const STORAGE_KEY = 'petal-plan.tasks.v1'
 const CLASSES_KEY = 'petal-plan.classes.v1'
 const pastelColors = ['#9b8bd3', '#75b798', '#e49a86', '#dfbd58', '#6fa9cf', '#d783ab', '#8aa6a1', '#c687db']
 const emptyDraft: TaskDraft = {
   title: '', course: '', type: 'assignment', priority: 'medium',
-  dueDate: '', dueTime: '', notes: '', recurrence: 'none', color: pastelColors[0],
+  dueDate: '', dueTime: '', notes: '', recurrence: 'none', recurrenceDays: [], color: pastelColors[0],
 }
 
 const typeLabels: Record<ItemType, string> = {
@@ -58,6 +69,14 @@ const typeLabels: Record<ItemType, string> = {
 }
 const recurrenceLabels: Record<Recurrence, string> = {
   none: 'Does not repeat', daily: 'Every day', weekly: 'Every week', biweekly: 'Every 2 weeks', monthly: 'Every month',
+}
+const shortWeekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+function recurrenceText(task: Pick<Task, 'recurrence' | 'recurrenceDays'>) {
+  if (task.recurrence === 'weekly' && task.recurrenceDays.length) {
+    return task.recurrenceDays.map((day) => shortWeekdays[day]).join(' & ')
+  }
+  return recurrenceLabels[task.recurrence].replace('Every ', '')
 }
 
 function localDate(dateString: string) {
@@ -78,10 +97,17 @@ function dateKey(date: Date) {
   return `${year}-${month}-${day}`
 }
 
-function addRecurrence(dateString: string, recurrence: Recurrence) {
+function addRecurrence(dateString: string, recurrence: Recurrence, recurrenceDays: number[] = []) {
   if (!dateString || recurrence === 'none') return dateString
   const date = localDate(dateString)!
   if (recurrence === 'daily') date.setDate(date.getDate() + 1)
+  if (recurrence === 'weekly' && recurrenceDays.length) {
+    for (let daysAhead = 1; daysAhead <= 7; daysAhead += 1) {
+      const candidate = new Date(date)
+      candidate.setDate(candidate.getDate() + daysAhead)
+      if (recurrenceDays.includes(candidate.getDay())) return dateKey(candidate)
+    }
+  }
   if (recurrence === 'weekly') date.setDate(date.getDate() + 7)
   if (recurrence === 'biweekly') date.setDate(date.getDate() + 14)
   if (recurrence === 'monthly') {
@@ -114,8 +140,8 @@ function dueInfo(task: Task) {
 function loadTasks(): Task[] {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    const parsed: Array<Task & { color?: string }> = stored ? JSON.parse(stored) : []
-    return parsed.map((task, index) => ({ ...task, color: task.color || pastelColors[index % pastelColors.length] }))
+    const parsed: Array<Task & { color?: string; recurrenceDays?: number[] }> = stored ? JSON.parse(stored) : []
+    return parsed.map((task, index) => ({ ...task, color: task.color || pastelColors[index % pastelColors.length], recurrenceDays: task.recurrenceDays || [] }))
   } catch {
     return []
   }
@@ -146,27 +172,33 @@ export default function App() {
   const [classModalOpen, setClassModalOpen] = useState(false)
   const [className, setClassName] = useState('')
   const [classColor, setClassColor] = useState(pastelColors[1])
+  const [quickTitle, setQuickTitle] = useState('')
+  const [quickCourse, setQuickCourse] = useState('General')
+  const [quickType, setQuickType] = useState<ItemType>('assignment')
+  const [quickDueDate, setQuickDueDate] = useState('')
+  const [listening, setListening] = useState(false)
+  const quickInputRef = useRef<HTMLInputElement>(null)
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
 
   useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)), [tasks])
   useEffect(() => localStorage.setItem(CLASSES_KEY, JSON.stringify(classes)), [classes])
+  useEffect(() => () => recognitionRef.current?.stop(), [])
 
   const today = dateKey(todayAtMidnight())
   const courses = useMemo(() => [...new Set([...classes.map((item) => item.name), ...tasks.map((task) => task.course)].filter(Boolean))].sort(), [tasks, classes])
-  const stats = useMemo(() => ({
-    open: tasks.filter((task) => !task.completed).length,
-    today: tasks.filter((task) => !task.completed && task.dueDate === today).length,
-    upcoming: tasks.filter((task) => {
-      if (task.completed || !task.dueDate) return false
-      const diff = (localDate(task.dueDate)!.getTime() - todayAtMidnight().getTime()) / 86_400_000
-      return diff > 0 && diff <= 7
-    }).length,
-    done: tasks.filter((task) => task.completed).length,
-  }), [tasks, today])
+  const openCount = tasks.filter((task) => !task.completed && task.type !== 'exam' && task.type !== 'quiz').length
+  const todayCount = tasks.filter((task) => !task.completed && task.dueDate === today).length
+  const parsedQuickTask = useMemo(() => parseQuickTask(quickTitle, classes.map((item) => item.name)), [quickTitle, classes])
+  const inferredCourse = parsedQuickTask.course || quickCourse
+  const inferredType = parsedQuickTask.type !== 'assignment' ? parsedQuickTask.type : quickType
+  const inferredDate = parsedQuickTask.dueDate || quickDueDate
+  const speechWindow = window as SpeechWindow
+  const speechSupported = Boolean(speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition)
+  const inferredDateLabel = inferredDate ? localDate(inferredDate)?.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''
 
   const visibleTasks = useMemo(() => tasks.filter((task) => {
-    if (status === 'open' && task.completed) return false
+    if (status === 'open' && (task.completed || task.type === 'exam' || task.type === 'quiz')) return false
     if (status === 'completed' && !task.completed) return false
-    if (status === 'today' && (task.completed || task.dueDate !== today)) return false
     if (status === 'assessments' && (task.completed || !['exam', 'quiz'].includes(task.type))) return false
     if (typeFilter !== 'all' && task.type !== typeFilter) return false
     if (courseFilter !== 'all' && task.course !== courseFilter) return false
@@ -177,20 +209,70 @@ export default function App() {
     if (!a.dueDate) return 1
     if (!b.dueDate) return -1
     return `${a.dueDate}${a.dueTime}`.localeCompare(`${b.dueDate}${b.dueTime}`)
-  }), [tasks, status, typeFilter, courseFilter, search, today])
+  }), [tasks, status, typeFilter, courseFilter, search])
 
   function openCreate() {
-    const selectedClass = classes.find((item) => item.name === courseFilter)
+    const selectedClass = classes.find((item) => item.name === inferredCourse)
     setEditingId(null)
-    setDraft(selectedClass ? { ...emptyDraft, course: selectedClass.name, color: selectedClass.color } : emptyDraft)
+    setDraft({ ...emptyDraft, title: parsedQuickTask.title, course: inferredCourse === 'General' ? '' : inferredCourse, type: inferredType, priority: parsedQuickTask.priority, dueDate: inferredDate, dueTime: parsedQuickTask.dueTime, recurrence: parsedQuickTask.recurrence, recurrenceDays: parsedQuickTask.recurrenceDays, color: selectedClass?.color || emptyDraft.color })
     setModalOpen(true)
   }
 
   function quickAdd(item: ClassGroup) {
-    setEditingId(null)
-    setDraft({ ...emptyDraft, course: item.name, color: item.color })
+    setQuickCourse(item.name)
+    setCourseFilter(item.name)
     setClassModalOpen(false)
-    setModalOpen(true)
+    window.setTimeout(() => quickInputRef.current?.focus(), 0)
+  }
+
+  function addQuickTask(event: React.FormEvent) {
+    event.preventDefault()
+    const title = parsedQuickTask.title.trim()
+    if (!title) return
+    const matchingClass = classes.find((item) => item.name === inferredCourse)
+    setTasks((current) => [...current, {
+      ...emptyDraft,
+      id: crypto.randomUUID(),
+      title,
+      course: inferredCourse,
+      type: inferredType,
+      priority: parsedQuickTask.priority,
+      dueDate: inferredDate,
+      dueTime: parsedQuickTask.dueTime,
+      recurrence: parsedQuickTask.recurrence,
+      recurrenceDays: parsedQuickTask.recurrenceDays,
+      color: matchingClass?.color || emptyDraft.color,
+      completed: false,
+      createdAt: new Date().toISOString(),
+    }])
+    setQuickTitle('')
+    setQuickDueDate('')
+    setStatus('open')
+    window.setTimeout(() => quickInputRef.current?.focus(), 0)
+  }
+
+  function toggleVoice() {
+    if (listening) {
+      recognitionRef.current?.stop()
+      return
+    }
+    const Recognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition
+    if (!Recognition) return
+    const recognition = new Recognition()
+    const startingText = quickTitle.trim()
+    recognition.lang = 'en-US'
+    recognition.continuous = false
+    recognition.interimResults = true
+    recognition.onresult = (event) => {
+      let transcript = ''
+      for (let index = 0; index < event.results.length; index += 1) transcript += event.results[index][0].transcript
+      setQuickTitle(`${startingText} ${transcript}`.trim())
+    }
+    recognition.onend = () => { setListening(false); recognitionRef.current = null }
+    recognition.onerror = () => { setListening(false); recognitionRef.current = null }
+    recognitionRef.current = recognition
+    setListening(true)
+    recognition.start()
   }
 
   function openEdit(task: Task) {
@@ -239,6 +321,7 @@ export default function App() {
 
   function filterClass(name: string) {
     setCourseFilter(name)
+    setQuickCourse(name)
     setStatus('open')
   }
 
@@ -247,7 +330,7 @@ export default function App() {
     setTasks((current) => {
       let next = current.map((item) => item.id === task.id ? { ...item, completed: completing } : item)
       if (completing && task.recurrence !== 'none') {
-        const nextDate = addRecurrence(task.dueDate, task.recurrence)
+        const nextDate = addRecurrence(task.dueDate, task.recurrence, task.recurrenceDays)
         const duplicate = next.some((item) => !item.completed && item.title === task.title && item.course === task.course && item.dueDate === nextDate)
         if (!duplicate) next = [...next, { ...task, id: crypto.randomUUID(), dueDate: nextDate, completed: false, createdAt: new Date().toISOString() }]
       }
@@ -264,15 +347,20 @@ export default function App() {
     if (next === 'assessments') setTypeFilter('all')
   }
 
+  function goToPlanner() {
+    setStatus('open')
+    setCourseFilter('all')
+    setTypeFilter('all')
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <button className="brand" onClick={() => changeStatus('open')} aria-label="plany home">
+        <button className="brand" onClick={goToPlanner} aria-label="plany home">
           <span className="brand-mark"><Flower2 size={20} /></span><span>plany</span>
         </button>
         <nav className="side-nav" aria-label="Planner navigation">
-          <button className={status === 'open' ? 'active' : ''} onClick={() => changeStatus('open')}><LayoutDashboard /> <span>My planner</span></button>
-          <button className={status === 'today' ? 'active' : ''} onClick={() => changeStatus('today')}><CalendarDays /> <span>Due today</span></button>
+          <button className={status === 'open' ? 'active' : ''} onClick={goToPlanner}><LayoutDashboard /> <span>My planner</span></button>
           <button className={status === 'assessments' ? 'active' : ''} onClick={() => changeStatus('assessments')}><GraduationCap /> <span>Exams & quizzes</span></button>
           <button className={status === 'completed' ? 'active' : ''} onClick={() => changeStatus('completed')}><CheckCircle2 /> <span>Completed</span></button>
         </nav>
@@ -286,53 +374,50 @@ export default function App() {
             {!classes.length && <button className="empty-classes" onClick={() => setClassModalOpen(true)}>+ Add your classes</button>}
           </div>
         </section>
-        <div className="side-note"><Sparkles size={18} /><p><strong>Small steps count.</strong><br />One task at a time.</p></div>
       </aside>
 
       <main className="main-content">
-        <header className="topbar">
-          <div><p className="eyebrow">YOUR STUDY SPACE</p><h1>Let’s make a little progress.</h1><p className="subtitle">Everything you need to stay one step ahead.</p></div>
-          <button className="primary-button" onClick={openCreate}><Plus size={17} /> <span>Add assignment</span></button>
+        <header className="simple-header">
+          <div><p className="eyebrow">PLANY</p><h1>{courseFilter !== 'all' ? courseFilter : 'My notes'}</h1></div>
+          <p><strong>{openCount}</strong> to do <span>·</span> <strong>{todayCount}</strong> due today</p>
         </header>
 
-        <section className="stats-grid" aria-label="Task overview">
-          <button className="stat-card lavender" onClick={() => changeStatus('open')}><span className="stat-icon"><ClipboardList /></span><span><strong>{stats.open}</strong><small>Open tasks</small></span></button>
-          <button className="stat-card peach" onClick={() => changeStatus('today')}><span className="stat-icon"><AlarmClock /></span><span><strong>{stats.today}</strong><small>Due today</small></span></button>
-          <div className="stat-card mint"><span className="stat-icon"><CalendarDays /></span><span><strong>{stats.upcoming}</strong><small>Next 7 days</small></span></div>
-          <button className="stat-card yellow" onClick={() => changeStatus('completed')}><span className="stat-icon"><CheckCircle2 /></span><span><strong>{stats.done}</strong><small>Completed</small></span></button>
-        </section>
+        <form className="quick-capture" onSubmit={addQuickTask}>
+          <div className="capture-line"><Plus size={21} /><input ref={quickInputRef} autoFocus maxLength={200} value={quickTitle} onChange={(event) => setQuickTitle(event.target.value)} placeholder={listening ? 'Listening…' : 'Try “Biology quiz next Friday, high priority”'} aria-label="New task title" /><button className={`voice-button ${listening ? 'listening' : ''}`} type="button" onClick={toggleVoice} disabled={!speechSupported} title={speechSupported ? 'Add by voice' : 'Voice input is not supported by this browser'} aria-label={listening ? 'Stop listening' : 'Add by voice'}><Mic size={17} /></button><button className="add-button" type="submit" disabled={!quickTitle.trim()}>Add</button></div>
+          {quickTitle.trim() && <div className="smart-preview"><span>Will add <strong>{parsedQuickTask.title}</strong></span><i>{inferredCourse}</i><i>{typeLabels[inferredType]}</i><i>{inferredDateLabel || 'No date'}</i>{parsedQuickTask.recurrence !== 'none' && <i><Repeat2 size={10} /> {recurrenceText(parsedQuickTask)}</i>}<i className={`preview-priority ${parsedQuickTask.priority}`}>{parsedQuickTask.priority} priority</i></div>}
+          <div className="capture-options">
+            <label><span>Class</span><select value={quickCourse} onChange={(event) => setQuickCourse(event.target.value)}><option value="General">General</option>{courses.filter((course) => course !== 'General').map((course) => <option key={course}>{course}</option>)}</select></label>
+            <label><span>Type</span><select value={quickType} onChange={(event) => setQuickType(event.target.value as ItemType)}>{Object.entries(typeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+            <label className="quick-date"><CalendarDays size={14} /><span>Due</span><input type="date" value={quickDueDate} onChange={(event) => setQuickDueDate(event.target.value)} /></label>
+            <button className="more-details" type="button" onClick={openCreate}>More details</button>
+          </div>
+        </form>
 
-        <section className="planner-panel">
-          <div className="planner-heading">
-            <div><p className="eyebrow">STAY ON TRACK</p><h2>{status === 'today' ? 'Due today' : status === 'assessments' ? 'Exams & quizzes' : courseFilter !== 'all' ? `${courseFilter} assignments` : 'Your assignments'}</h2></div>
-            <div className="view-tabs" aria-label="Filter by completion status">
-              <button className={status === 'open' ? 'active' : ''} onClick={() => changeStatus('open')}>To do</button>
-              <button className={status === 'all' ? 'active' : ''} onClick={() => changeStatus('all')}>All</button>
-              <button className={status === 'completed' ? 'active' : ''} onClick={() => changeStatus('completed')}>Done</button>
-            </div>
+        <section className="notes-section">
+          <div className="notes-toolbar">
+            <h2>{status === 'assessments' ? 'Exams & quizzes' : status === 'completed' ? 'Completed' : 'To do'}</h2>
           </div>
 
-          <div className="filters">
+          <div className="simple-filters">
             <label className="search-box"><Search size={16} /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search assignments or classes" /><span className="sr-only">Search</span></label>
-            <label className="select-wrap"><ListFilter size={14} /><select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as 'all' | ItemType)} aria-label="Filter by type"><option value="all">All types</option>{Object.entries(typeLabels).map(([value, label]) => <option key={value} value={value}>{label}s</option>)}</select><ChevronDown size={14} /></label>
-            <label className="select-wrap"><BookOpen size={14} /><select value={courseFilter} onChange={(e) => setCourseFilter(e.target.value)} aria-label="Filter by class"><option value="all">All classes</option>{courses.map((course) => <option key={course}>{course}</option>)}</select><ChevronDown size={14} /></label>
+            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as 'all' | ItemType)} aria-label="Filter by type"><option value="all">All types</option>{Object.entries(typeLabels).map(([value, label]) => <option key={value} value={value}>{label}s</option>)}</select>
           </div>
 
           <div className="task-list">
-            {visibleTasks.map((task, index) => {
+            {visibleTasks.map((task) => {
               const due = dueInfo(task)
               return <article className={`task-card priority-${task.priority} ${task.completed ? 'is-complete' : ''}`} style={{ borderLeftColor: task.color }} key={task.id}>
                 <button className="check-button" onClick={() => toggleTask(task)} aria-label={`Mark ${task.title} ${task.completed ? 'incomplete' : 'complete'}`}>{task.completed && <Check size={13} strokeWidth={3} />}</button>
                 <div className="task-main">
-                  <div className="task-title-row"><h3>{task.title}</h3>{task.recurrence !== 'none' && <span className="recurring"><Repeat2 size={11} /> {recurrenceLabels[task.recurrence].replace('Every ', '')}</span>}</div>
-                  <div className="task-meta"><span className={`course-dot color-${index % 4}`} style={{ backgroundColor: task.color }} /><span>{task.course}</span><i /><span>{typeLabels[task.type]}</span><i /><span className={`due ${due.state}`}><Clock3 size={12} /> {due.label}</span></div>
+                  <div className="task-title-row"><h3>{task.title}</h3>{task.recurrence !== 'none' && <span className="recurring"><Repeat2 size={11} /> {recurrenceText(task)}</span>}</div>
+                  <div className="task-meta"><span className="course-dot" style={{ backgroundColor: task.color }} /><span>{task.course}</span><i /><span>{typeLabels[task.type]}</span>{task.dueDate && <><i /><span className={`due ${due.state}`}><Clock3 size={12} /> {due.label}</span></>}</div>
                   {task.notes && <p className="task-notes">{task.notes}</p>}
                 </div>
                 <span className={`priority-badge ${task.priority}`}>{task.priority}</span>
                 <div className="task-actions"><button onClick={() => openEdit(task)} aria-label={`Edit ${task.title}`}><Pencil /></button><button onClick={() => deleteTask(task.id)} aria-label={`Delete ${task.title}`}><Trash2 /></button></div>
               </article>
             })}
-            {!visibleTasks.length && <div className="empty-state"><span><Flower2 /></span><h3>{tasks.length ? 'No matches found' : 'A fresh page'}</h3><p>{tasks.length ? 'Try adjusting your filters or search.' : 'Your schedule has room to bloom. Add your first assignment when you’re ready.'}</p><button className="secondary-button" onClick={openCreate}><Plus size={15} /> Add a task</button></div>}
+            {!visibleTasks.length && <div className="empty-state"><span><Flower2 /></span><h3>{tasks.length ? 'No matches found' : 'Nothing here yet'}</h3><p>{tasks.length ? 'Try another search or view.' : 'Type above and press Enter to add your first note.'}</p><button className="secondary-button" onClick={() => quickInputRef.current?.focus()}><Plus size={15} /> Start typing</button></div>}
           </div>
         </section>
       </main>
@@ -348,7 +433,7 @@ export default function App() {
               <label>Due date<input type="date" value={draft.dueDate} onChange={(e) => setDraft({ ...draft, dueDate: e.target.value })} /></label>
               <label>Due time<input type="time" value={draft.dueTime} onChange={(e) => setDraft({ ...draft, dueTime: e.target.value })} /></label>
               <label>Priority<select value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value as Priority })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
-              <label>Repeat<select value={draft.recurrence} onChange={(e) => setDraft({ ...draft, recurrence: e.target.value as Recurrence })}>{Object.entries(recurrenceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label>Repeat<select value={draft.recurrence} onChange={(e) => setDraft({ ...draft, recurrence: e.target.value as Recurrence, recurrenceDays: [] })}>{Object.entries(recurrenceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
               <fieldset className="color-field full-field"><legend>Task color</legend><div className="color-options">{pastelColors.map((color) => <button type="button" key={color} className={draft.color === color ? 'selected' : ''} style={{ backgroundColor: color }} onClick={() => setDraft({ ...draft, color })} aria-label={`Use color ${color}`}>{draft.color === color && <Check size={13} />}</button>)}</div></fieldset>
               <label className="full-field">Notes <small>(optional)</small><textarea rows={3} placeholder="Add details, chapters, links, or reminders…" value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} /></label>
             </div>
