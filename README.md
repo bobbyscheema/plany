@@ -31,6 +31,7 @@ Before saving, plany locally identifies the assignment name, class, type, due da
 - Automatic creation of the next occurrence after completing recurring work
 - Responsive desktop and mobile layouts
 - Browser-local persistence with no sign-in or server required
+- Downloadable JSON backups and local restore
 
 ## Quick-entry language
 
@@ -84,19 +85,22 @@ Requirements:
 - Node.js 20 or newer
 - npm
 
+Install and start plany:
+
 ```bash
 git clone https://github.com/bobbyscheema/plany.git
 cd plany
 npm install
-npm run dev
+npm start
 ```
 
-Open the local URL printed by Vite.
+`npm start` creates a fresh local build and opens plany in your browser. Your data remains on your computer.
 
 ## Available scripts
 
 | Command | Purpose |
 | --- | --- |
+| `npm start` | Build and open plany for everyday local use |
 | `npm run dev` | Start the Vite development server |
 | `npm run build` | Type-check and create a production build in `dist/` |
 | `npm run preview` | Preview the production build locally |
@@ -112,10 +116,12 @@ Because data is browser-local:
 - Data does not automatically sync between browsers or devices.
 - Running the app under a different domain or port may create a separate storage area.
 
+Use **Backup & restore** at the bottom of the plany menu to download a JSON copy of all tasks and classes. The same screen can restore that file on another local installation.
+
 ## Project structure
 
 ```text
-todo/
+plany/
 ├── public/
 │   ├── favicon.svg        # plany logo and browser icon
 │   └── site.webmanifest   # installable app metadata

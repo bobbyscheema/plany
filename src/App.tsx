@@ -4,15 +4,18 @@ import {
   Check,
   CheckCircle2,
   Clock3,
+  Download,
   Flower2,
   GraduationCap,
   LayoutDashboard,
+  LibraryBig,
   Mic,
   Pencil,
   Plus,
   Repeat2,
   Search,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react'
 import { parseQuickTask } from './parser'
@@ -159,6 +162,44 @@ function loadClasses(): ClassGroup[] {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function normalizeTask(value: unknown, index: number): Task | null {
+  if (!isRecord(value) || typeof value.title !== 'string' || !value.title.trim()) return null
+  const allowedTypes: ItemType[] = ['assignment', 'quiz', 'exam', 'project', 'reading']
+  const allowedPriorities: Priority[] = ['low', 'medium', 'high']
+  const allowedRecurrences: Recurrence[] = ['none', 'daily', 'weekly', 'biweekly', 'monthly']
+  const type = allowedTypes.includes(value.type as ItemType) ? value.type as ItemType : 'assignment'
+  const priority = allowedPriorities.includes(value.priority as Priority) ? value.priority as Priority : 'medium'
+  const recurrence = allowedRecurrences.includes(value.recurrence as Recurrence) ? value.recurrence as Recurrence : 'none'
+  return {
+    id: typeof value.id === 'string' ? value.id : crypto.randomUUID(),
+    title: value.title.trim(),
+    course: typeof value.course === 'string' && value.course.trim() ? value.course.trim() : 'General',
+    type,
+    priority,
+    dueDate: typeof value.dueDate === 'string' ? value.dueDate : '',
+    dueTime: typeof value.dueTime === 'string' ? value.dueTime : '',
+    notes: typeof value.notes === 'string' ? value.notes : '',
+    recurrence,
+    recurrenceDays: Array.isArray(value.recurrenceDays) ? value.recurrenceDays.filter((day): day is number => typeof day === 'number' && day >= 0 && day <= 6) : [],
+    completed: value.completed === true,
+    createdAt: typeof value.createdAt === 'string' ? value.createdAt : new Date().toISOString(),
+    color: typeof value.color === 'string' ? value.color : pastelColors[index % pastelColors.length],
+  }
+}
+
+function normalizeClass(value: unknown, index: number): ClassGroup | null {
+  if (!isRecord(value) || typeof value.name !== 'string' || !value.name.trim()) return null
+  return {
+    id: typeof value.id === 'string' ? value.id : crypto.randomUUID(),
+    name: value.name.trim(),
+    color: typeof value.color === 'string' ? value.color : pastelColors[index % pastelColors.length],
+  }
+}
+
 export default function App() {
   const [tasks, setTasks] = useState<Task[]>(loadTasks)
   const [classes, setClasses] = useState<ClassGroup[]>(loadClasses)
@@ -177,8 +218,11 @@ export default function App() {
   const [quickType, setQuickType] = useState<ItemType>('assignment')
   const [quickDueDate, setQuickDueDate] = useState('')
   const [listening, setListening] = useState(false)
+  const [dataModalOpen, setDataModalOpen] = useState(false)
+  const [dataMessage, setDataMessage] = useState('')
   const quickInputRef = useRef<HTMLInputElement>(null)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const importInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)), [tasks])
   useEffect(() => localStorage.setItem(CLASSES_KEY, JSON.stringify(classes)), [classes])
@@ -273,6 +317,39 @@ export default function App() {
     recognitionRef.current = recognition
     setListening(true)
     recognition.start()
+  }
+
+  function exportBackup() {
+    const backup = { version: 1, exportedAt: new Date().toISOString(), tasks, classes }
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `plany-backup-${dateKey(new Date())}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+    setDataMessage('Backup downloaded.')
+  }
+
+  async function importBackup(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!isRecord(parsed) || !Array.isArray(parsed.tasks) || !Array.isArray(parsed.classes)) throw new Error('Invalid backup')
+      const restoredTasks = parsed.tasks.map(normalizeTask).filter((task): task is Task => task !== null)
+      const restoredClasses = parsed.classes.map(normalizeClass).filter((item): item is ClassGroup => item !== null)
+      if (restoredTasks.length !== parsed.tasks.length || restoredClasses.length !== parsed.classes.length) throw new Error('Invalid backup')
+      if ((tasks.length || classes.length) && !window.confirm('Replace the current local planner with this backup?')) return
+      setTasks(restoredTasks)
+      setClasses(restoredClasses)
+      setCourseFilter('all')
+      setStatus('open')
+      setDataMessage(`Restored ${restoredTasks.length} task${restoredTasks.length === 1 ? '' : 's'}.`)
+    } catch {
+      setDataMessage('That file is not a valid plany backup.')
+    }
   }
 
   function openEdit(task: Task) {
@@ -374,6 +451,7 @@ export default function App() {
             {!classes.length && <button className="empty-classes" onClick={() => setClassModalOpen(true)}>+ Add your classes</button>}
           </div>
         </section>
+        <button className="data-menu-button" onClick={() => { setDataMessage(''); setDataModalOpen(true) }}><LibraryBig size={16} /><span>Backup & restore</span></button>
       </aside>
 
       <main className="main-content">
@@ -452,6 +530,21 @@ export default function App() {
               <button className="primary-button" type="submit"><Plus size={16} /> Add class</button>
             </form>
             {!!classes.length && <div className="managed-classes"><p className="eyebrow">CURRENT CLASSES</p>{classes.map((item) => <div key={item.id}><i style={{ backgroundColor: item.color }} /><span>{item.name}</span><button onClick={() => quickAdd(item)}><Plus size={14} /> Quick add</button><button className="remove-class" onClick={() => deleteClass(item.id)} aria-label={`Remove ${item.name}`}><Trash2 size={14} /></button></div>)}</div>}
+          </div>
+        </section>
+      </div>}
+
+      {dataModalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && setDataModalOpen(false)}>
+        <section className="task-modal data-modal" role="dialog" aria-modal="true" aria-labelledby="data-modal-title">
+          <div className="task-form">
+            <div className="modal-header"><div><p className="eyebrow">LOCAL DATA</p><h2 id="data-modal-title">Backup & restore</h2></div><button type="button" className="close-button" onClick={() => setDataModalOpen(false)} aria-label="Close"><X /></button></div>
+            <p className="data-description">Your {tasks.length} task{tasks.length === 1 ? '' : 's'} and {classes.length} class{classes.length === 1 ? '' : 'es'} live only in this browser. Download a backup before clearing browser data or moving to another computer.</p>
+            <div className="data-actions">
+              <button className="primary-button" onClick={exportBackup}><Download size={15} /> Download backup</button>
+              <button className="secondary-button" onClick={() => importInputRef.current?.click()}><Upload size={15} /> Restore backup</button>
+              <input ref={importInputRef} className="sr-only" type="file" accept="application/json,.json" onChange={importBackup} />
+            </div>
+            {dataMessage && <p className="data-message" role="status">{dataMessage}</p>}
           </div>
         </section>
       </div>}
